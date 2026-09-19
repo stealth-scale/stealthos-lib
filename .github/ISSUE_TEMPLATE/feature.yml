@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a module or a function the library does not have.
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open this to agree the problem first. A module of the api layer changes a system, so
+        its contract is discussed before it is written.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were trying to do on the system, and where the library stopped you.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today
+      description: >
+        The commands or the script you run instead, and what they cost. A problem with no
+        workaround is worth saying so plainly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: The shape you have in mind
+      description: The function as you would call it, where you have one. Leave it empty rather than guess.
+      render: bash
+    validations:
+      required: false
