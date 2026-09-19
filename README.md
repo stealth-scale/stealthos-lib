@@ -1,8 +1,9 @@
 # stealthos-lib
 
-The bash library and command of StealthOS, ported here module by module from the previous
-implementation. The repository holds the build, the test harness and the conventions. The
-modules land under `src/lib` with their tests, one at a time.
+The bash library and command of StealthOS. `stealth` loads modules and runs them through a
+lifecycle on a Fedora-based system. The library under it gives a module what it needs, from
+logging and assertions to disks, packages, users, services, networks and virtual machines,
+as namespaced functions with a contract each.
 
 ## Layout
 
@@ -13,10 +14,12 @@ modules land under `src/lib` with their tests, one at a time.
 | `src/lib/core` | The engine, the loader, state and traps: the lifecycle |
 | `src/lib/sys` | Commands, environment, data formats, files, networks, the runtime |
 | `src/lib/api` | Disks, packages, users, services, networks, security, virtual machines: the operations a module composes |
-| `tests` | The suites, one directory per layer under `tests/<suite>/`, and the harness under `tests/helpers` |
+| `tests` | One directory per layer under `tests/<suite>/`, and the harness under `tests/helpers` |
 
 Every function is namespaced by its path, `stealth::sys::cmd::exists`, and a module states
 what it needs through the importer. The files under `src/lib` are sourced, not executed.
+`stealth` is the entry point. Each module arrives with its tests and its docblocks, and the
+suites stay at full line coverage.
 
 ## Requirements
 
@@ -48,7 +51,7 @@ make check                                  # what CI runs: lint, then test
 
 `RUNTIME=docker` selects Docker. The default is Podman.
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the porting steps and the conventions.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the steps for a new module and the conventions.
 
 ## License
 

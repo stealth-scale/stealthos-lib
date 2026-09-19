@@ -34,7 +34,7 @@ CI runs `make lint`, `make test` for bash 4.4, 5.1, 5.2 and 5.3 against bats-cor
 1.14.0, `make test` on the Fedora image, and `make coverage` on the Fedora image at the
 100% floor.
 
-## Porting a module
+## Adding a module
 
 One module per pull request, with its tests.
 

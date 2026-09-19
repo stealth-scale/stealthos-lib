@@ -1,3 +1,4 @@
 # kcov output from make coverage
 coverage/
+# Local scratch space
 .scratch/
