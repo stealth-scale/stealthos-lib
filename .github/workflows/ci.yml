@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  SHELLCHECK_VERSION: v0.11.0
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install ShellCheck ${{ env.SHELLCHECK_VERSION }}
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ --strip-components 1 -C "$HOME/.local/bin" "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: make lint
+
+  # The bash and bats matrix, in the bats-test image, as `make test` runs it locally.
+  test:
+    name: test (bash ${{ matrix.bash }}, bats ${{ matrix.bats }})
+    strategy:
+      fail-fast: false
+      matrix:
+        bash: ["4.4", "5.1", "5.2", "5.3"]
+        bats: ["1.7.0", "1.14.0"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - run: make test RUNTIME=docker BASH_VERSION=${{ matrix.bash }} BATS_VERSION=${{ matrix.bats }}
+
+  # The platform stealth runs on: Fedora's own bash and bats, on glibc.
+  test-fedora:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - run: make test RUNTIME=docker DISTRO=fedora
+
+  # Line coverage from kcov, on the Fedora image. The report is an artifact.
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - run: make coverage RUNTIME=docker DISTRO=fedora
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage
+          if-no-files-found: ignore
