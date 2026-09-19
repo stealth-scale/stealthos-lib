@@ -1,0 +1,3 @@
+# The library files are sourced and carry no shebang; every one is bash.
+shell=bash
+external-sources=true
