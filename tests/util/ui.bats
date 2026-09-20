@@ -9,8 +9,8 @@
 # ==============================================================================
 # Everything is drawn on the console sink of util/log, so setup binds that
 # descriptor to a file and console reads it back. A test has no terminal, so a
-# test that needs one overrides _is_terminal, and a test that needs a person
-# to answer overrides _is_interactive and feeds standard input.
+# test that needs one mocks _is_terminal, and a test that needs a person to
+# answer mocks _is_interactive and feeds standard input.
 #
 # The tests are grouped by subject: the public functions in the order the
 # module declares them, then the internals, then the module itself.
@@ -51,20 +51,15 @@ console() {
 }
 
 # Answers as a terminal for the drawing that only a terminal gets.
-#
-# These two override rather than mock. A mock's wrapper reads the standard
-# input of whatever it stands in for, so a mocked _is_interactive swallows the
-# answer a test is feeding to the prompt, and the prompt then sees the end of
-# input. No test here reads the calls, so an override is enough.
 given_a_terminal() {
-    # shellcheck disable=SC2329  # the library calls this, not the test
-    stealth::util::ui::_is_terminal() { return 0; }
+    mock stealth::util::ui::_is_terminal '*' 'return 0'
 }
 
-# Answers as a person who is there to be asked.
+# Answers as a person who is there to be asked. A mock records what it was
+# called with and leaves standard input alone, so the answer a test feeds to
+# the prompt still reaches it.
 given_someone_to_ask() {
-    # shellcheck disable=SC2329  # the library calls this, not the test
-    stealth::util::ui::_is_interactive() { return 0; }
+    mock stealth::util::ui::_is_interactive '*' 'return 0'
 }
 
 # ------------------------------------------------------------------------------
