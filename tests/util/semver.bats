@@ -450,6 +450,80 @@ teardown() {
 }
 
 # ------------------------------------------------------------------------------
+# stealth::util::semver::sort
+# ------------------------------------------------------------------------------
+
+@test "stealth::util::semver::sort: versions -> newest first" {
+    local ordered
+
+    stealth::util::semver::sort ordered 1.0.0 1.10.0 1.2.0
+
+    assert_array_equal ordered 1.10.0 1.2.0 1.0.0
+}
+
+@test "stealth::util::semver::sort: a prerelease -> is older than its release" {
+    # sort -V gets this the wrong way round.
+    local ordered
+
+    stealth::util::semver::sort ordered 1.0.0-rc1 1.0.0 1.0.0-rc2
+
+    assert_array_equal ordered 1.0.0 1.0.0-rc2 1.0.0-rc1
+}
+
+@test "stealth::util::semver::sort: a leading v -> is kept" {
+    local ordered
+
+    stealth::util::semver::sort ordered v1.0.0 v1.10.0
+
+    assert_array_equal ordered v1.10.0 v1.0.0
+}
+
+@test "stealth::util::semver::sort: something that is not a version -> goes last" {
+    local ordered
+
+    stealth::util::semver::sort ordered nightly v1.0.0 latest v2.0.0
+
+    assert_array_equal ordered v2.0.0 v1.0.0 nightly latest
+}
+
+@test "stealth::util::semver::sort: nothing but names -> they come back in order" {
+    local ordered
+
+    stealth::util::semver::sort ordered nightly latest
+
+    assert_array_equal ordered nightly latest
+}
+
+@test "stealth::util::semver::sort: one version -> comes back on its own" {
+    local ordered
+
+    stealth::util::semver::sort ordered 1.2.3
+
+    assert_array_equal ordered 1.2.3
+}
+
+@test "stealth::util::semver::sort: nothing at all -> an empty array" {
+    local ordered=(stale)
+
+    stealth::util::semver::sort ordered
+
+    assert_array_empty ordered
+}
+
+@test "stealth::util::semver::sort: the same version twice -> comes back twice" {
+    local ordered
+
+    stealth::util::semver::sort ordered 1.0.0 1.0.0
+
+    assert_array_length ordered 2
+}
+
+@test "stealth::util::semver::sort: no output array -> exits 1" {
+    run stealth::util::semver::sort '' 1.0.0
+    assert_refused 'an output array is required'
+}
+
+# ------------------------------------------------------------------------------
 # stealth::util::semver::satisfies
 # ------------------------------------------------------------------------------
 

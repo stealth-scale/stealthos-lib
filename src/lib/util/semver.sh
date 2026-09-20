@@ -679,6 +679,72 @@ stealth::util::semver::newest() {
 # =============================================================================
 
 #######################################
+# Puts versions in order, newest first.
+#
+# A leading v is allowed and kept. Tags are written v1.2.3 far more often
+# than 1.2.3, and a caller that had to strip it would have to put it back to
+# use the answer.
+#
+# Anything that is not a version at all goes to the end, in the order it came
+# in. A list of tags holds nightly and latest alongside the releases, and
+# neither is newer than 1.0.0 however it sorts alphabetically.
+#
+# This is what a build should use rather than sort -V. sort -V puts 1.0.0-rc1
+# after 1.0.0, and a release candidate is not newer than the release.
+#
+# Usage:
+#   stealth::util::semver::sort ordered "${tags[@]}"
+#   printf 'the newest is %s\n' "${ordered[0]}"
+#
+# Arguments:
+#   $1 (Nameref) - The output array
+#   $@ (String)  - The versions, each with or without a leading v
+# Returns:
+#   0 - Sorted
+#   Exits 1 when no output array is given
+#######################################
+stealth::util::semver::sort() {
+    stealth::util::assert::not_empty "${1:-}" 'an output array is required'
+    local -n _semver_sort_out="${1}"
+    shift
+
+    local -a _semver_sort_versions=() _semver_sort_other=()
+    local _semver_sort_one
+    for _semver_sort_one in "$@"; do
+        if stealth::util::semver::is_valid "${_semver_sort_one#v}"; then
+            _semver_sort_versions+=("${_semver_sort_one}")
+        else
+            _semver_sort_other+=("${_semver_sort_one}")
+        fi
+    done
+
+    # The written form of each is carried through the sort rather than a
+    # bare copy of it, so that v1.0.0 comes back as v1.0.0, and two entries
+    # of the same version come back as two entries.
+    _semver_sort_out=()
+    local -i _semver_sort_best _semver_sort_at _semver_sort_order
+    while (( ${#_semver_sort_versions[@]} > 0 )); do
+        _semver_sort_best=0
+        _semver_sort_at=1
+        while (( _semver_sort_at < ${#_semver_sort_versions[@]} )); do
+            stealth::util::semver::compare _semver_sort_order \
+                "${_semver_sort_versions[${_semver_sort_at}]#v}" \
+                "${_semver_sort_versions[${_semver_sort_best}]#v}"
+            if (( _semver_sort_order > 0 )); then
+                _semver_sort_best="${_semver_sort_at}"
+            fi
+            _semver_sort_at=$(( _semver_sort_at + 1 ))
+        done
+
+        _semver_sort_out+=("${_semver_sort_versions[${_semver_sort_best}]}")
+        _semver_sort_versions=("${_semver_sort_versions[@]:0:${_semver_sort_best}}" "${_semver_sort_versions[@]:$(( _semver_sort_best + 1 ))}")
+    done
+
+    _semver_sort_out+=("${_semver_sort_other[@]}")
+    return 0
+}
+
+#######################################
 # Tests a version against a constraint. A constraint is a comparison sign and
 # a version: >=1.2.0, >1.2.0, <=1.2.0, <1.2.0, =1.2.0, !=1.2.0. A constraint
 # with no sign asks for that version exactly.
