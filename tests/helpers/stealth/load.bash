@@ -16,19 +16,54 @@ bats_load_library bats-expect
 bats_load_library bats-mock
 bats_load_library bats-matrix
 
-STEALTH_TEST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-: "${STEALTH_LIB_DIR:=$STEALTH_TEST_ROOT/src/lib}"
-: "${STEALTH_TEST_DIR:=$STEALTH_TEST_ROOT/tests}"
+STEALTH_TEST_ROOT="$(readlink -f -- "${BASH_SOURCE[0]%/*}/../../..")"
+: "${STEALTH_LIB_DIR:=${STEALTH_TEST_ROOT}/src/lib}"
+: "${STEALTH_TEST_DIR:=${STEALTH_TEST_ROOT}/tests}"
 
 #######################################
-# The setup every test shares: the bats version the assertions need, and a mock
-# session. Call it first in setup().
+# Unsets every STEALTH_* variable the library reads, so a value in the shell
+# that started the run cannot change what a test does. The three variables of
+# the harness are kept. The list is local, because a global of its own would
+# match the pattern and the loop would unset it.
 #
+# Returns:
+#   0 - Scrubbed
+#######################################
+stealth_scrub_env() {
+    local -ra keep=(STEALTH_TEST_ROOT STEALTH_LIB_DIR STEALTH_TEST_DIR)
+    local name kept
+
+    while IFS= read -r name; do
+        for kept in "${keep[@]}"; do
+            if [[ "${name}" == "${kept}" ]]; then
+                continue 2
+            fi
+        done
+        unset "${name}" 2>/dev/null || true
+    done < <(compgen -v STEALTH_ || true)
+    return 0
+}
+
+#######################################
+# The setup every test shares: the bats version the assertions need, a scrubbed
+# environment, the library root, and a mock session. Call it first in setup().
+#
+# A test of the importer points STEALTH_LIB at a fixture tree after this
+# returns. Every other test keeps the checkout, so an import inside the module
+# under test finds the real dependency.
+#
+# Globals:
+#   STEALTH_LIB_DIR (Read)
+#   STEALTH_LIB (Write)
 # Returns:
 #   0 - Ready
 #######################################
 common_setup() {
     bats_require_minimum_version 1.5.0
+
+    stealth_scrub_env
+    export STEALTH_LIB="${STEALTH_LIB_DIR}"
+
     mock_setup
 }
 
@@ -56,12 +91,12 @@ common_teardown() {
 load_lib() {
     local lib
     for lib in "$@"; do
-        if [[ ! -f "$STEALTH_LIB_DIR/$lib.sh" ]]; then
-            printf 'load_lib: no module %s under %s\n' "$lib" "$STEALTH_LIB_DIR" >&2
+        if [[ ! -f "${STEALTH_LIB_DIR}/${lib}.sh" ]]; then
+            printf 'load_lib: no module %s under %s\n' "${lib}" "${STEALTH_LIB_DIR}" >&2
             return 1
         fi
         # shellcheck source=/dev/null
-        source "$STEALTH_LIB_DIR/$lib.sh"
+        source "${STEALTH_LIB_DIR}/${lib}.sh"
     done
 }
 
@@ -79,11 +114,11 @@ load_lib() {
 load_mock() {
     local mock
     for mock in "$@"; do
-        if [[ ! -f "$STEALTH_TEST_DIR/mocks/$mock.bash" ]]; then
-            printf 'load_mock: no mock %s under %s/mocks\n' "$mock" "$STEALTH_TEST_DIR" >&2
+        if [[ ! -f "${STEALTH_TEST_DIR}/mocks/${mock}.bash" ]]; then
+            printf 'load_mock: no mock %s under %s/mocks\n' "${mock}" "${STEALTH_TEST_DIR}" >&2
             return 1
         fi
         # shellcheck source=/dev/null
-        source "$STEALTH_TEST_DIR/mocks/$mock.bash"
+        source "${STEALTH_TEST_DIR}/mocks/${mock}.bash"
     done
 }
