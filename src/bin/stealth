@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+###############################################################################
+# stealth - the command that runs a list of modules through a lifecycle.
+#
+# It finds the library, turns the options into settings, hands the settings to
+# the engine, loads the modules the options name, and gives the engine control.
+#
+# The library is looked for next to this file first, and under the system
+# prefix after that. A checkout therefore runs its own library even on a
+# machine that has the package installed, which is the other way round from
+# how this used to work.
+#
+# The configuration is read before the first module is loaded, because the
+# stage comes out of it and the stage decides which file of a module is read.
+#
+# copyright: Stealth Scale B.V.
+###############################################################################
+set -Eeuo pipefail
+
+# =============================================================================
+# FINDING THE LIBRARY
+# =============================================================================
+
+_stealth_bin="$(readlink -f -- "${BASH_SOURCE[0]}")"
+_stealth_prefix="${_stealth_bin%/*}"
+_stealth_prefix="${_stealth_prefix%/*}"
+
+if [[ -z "${STEALTH_LIB:-}" || ! -f "${STEALTH_LIB}/util/import.sh" ]]; then
+    for _stealth_candidate in "${_stealth_prefix}/lib" '/usr/lib/stealth'; do
+        if [[ -f "${_stealth_candidate}/util/import.sh" ]]; then
+            STEALTH_LIB="${_stealth_candidate}"
+            break
+        fi
+    done
+    unset _stealth_candidate
+fi
+
+if [[ -z "${STEALTH_LIB:-}" || ! -f "${STEALTH_LIB}/util/import.sh" ]]; then
+    printf 'stealth: no library next to %s or under /usr/lib/stealth\n' \
+        "${_stealth_bin}" >&2
+    exit 1
+fi
+
+STEALTH_VERSION='unknown'
+if [[ -r "${STEALTH_LIB}/VERSION" ]]; then
+    STEALTH_VERSION="$(< "${STEALTH_LIB}/VERSION")"
+fi
+
+export STEALTH_LIB STEALTH_VERSION
+
+# shellcheck source=src/lib/util/import.sh
+source "${STEALTH_LIB}/util/import.sh"
+
+# =============================================================================
+# THE OPTIONS
+# =============================================================================
+
+usage() {
+    cat <<EOF
+Usage: stealth [OPTION]... [PAYLOAD [ARGUMENT]...]
+
+Runs the modules of a list through one stage of their lifecycle. A payload is
+a function a module defined, or a command, run between the start and the end
+of that stage.
+
+Options:
+  -c, --config FILE       Read this configuration file instead of the default
+      --conf-dir DIR      Read the fragments in this directory
+  -m, --module NAME       Load this module. May be given more than once
+  -M, --module-list FILE  Load the modules a shell file names in MODULES
+  -d, --module-dir DIR    Look for modules here. May be given more than once
+  -s, --stage STAGE       build, setup, root or user. Default: by the user
+  -l, --log-level LEVEL   0 off, 1 error, 2 warn, 3 info, 4 debug, 5 trace
+      --log-file FILE     Write the log here, or auto to pick a path
+      --log-format FORMAT text, json or logfmt
+  -q, --quiet             Errors only, the same as --log-level 1
+  -v, --verbose           Debug, the same as --log-level 4
+  -vv                     Trace, the same as --log-level 5
+      --no-color          Never colour the output
+      --dry-run           Say what would run instead of running it
+      --trace             Trace this shell as it runs
+  -V, --version           Print the version
+  -h, --help              Print this
+EOF
+}
+
+# Reads the value of an option, refusing one that is missing or is another
+# option, so a typo does not turn the next option into a filename.
+take_value() {
+    local -n _take_out="${1}"
+
+    if (( $# < 3 )) || [[ -z "${3}" || "${3}" == -* ]]; then
+        printf 'stealth: %s takes a value\n' "${2}" >&2
+        exit 1
+    fi
+    _take_out="${3}"
+}
+
+declare -a stealth_modules=() stealth_module_dirs=()
+declare stealth_module_list=''
+declare stealth_value=''
+
+while (( $# > 0 )); do
+    case "${1}" in
+        -c|--config)
+            take_value STEALTH_CONF_FILE "${1}" "${2:-}"
+            export STEALTH_CONF_FILE
+            shift 2
+            ;;
+        --conf-dir)
+            take_value STEALTH_CONF_DIR "${1}" "${2:-}"
+            export STEALTH_CONF_DIR
+            shift 2
+            ;;
+        -m|--module)
+            take_value stealth_value "${1}" "${2:-}"
+            stealth_modules+=("${stealth_value}")
+            shift 2
+            ;;
+        -M|--module-list)
+            take_value stealth_module_list "${1}" "${2:-}"
+            shift 2
+            ;;
+        -d|--module-dir)
+            take_value stealth_value "${1}" "${2:-}"
+            stealth_module_dirs+=("${stealth_value}")
+            shift 2
+            ;;
+        -s|--stage)
+            take_value STEALTH_STAGE "${1}" "${2:-}"
+            export STEALTH_STAGE
+            shift 2
+            ;;
+        -l|--log-level)
+            take_value STEALTH_LOG_LEVEL "${1}" "${2:-}"
+            export STEALTH_LOG_LEVEL
+            shift 2
+            ;;
+        --log-file)
+            take_value STEALTH_LOG_FILE "${1}" "${2:-}"
+            export STEALTH_LOG_FILE
+            shift 2
+            ;;
+        --log-format)
+            take_value STEALTH_LOG_FORMAT "${1}" "${2:-}"
+            export STEALTH_LOG_FORMAT
+            shift 2
+            ;;
+        -q|--quiet)
+            export STEALTH_LOG_LEVEL=1
+            shift
+            ;;
+        -v|--verbose)
+            export STEALTH_LOG_LEVEL=4
+            shift
+            ;;
+        -vv)
+            export STEALTH_LOG_LEVEL=5
+            shift
+            ;;
+        --no-color)
+            export STEALTH_LOG_COLOR=never
+            shift
+            ;;
+        --dry-run)
+            export STEALTH_DRY_RUN=1
+            shift
+            ;;
+        --trace)
+            set -x
+            shift
+            ;;
+        -V|--version)
+            printf 'stealth %s\n' "${STEALTH_VERSION}"
+            exit 0
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            printf 'stealth: no option %s\n' "${1}" >&2
+            usage >&2
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# =============================================================================
+# THE RUN
+# =============================================================================
+
+stealth::util::import 'core/engine'
+
+# The configuration first. The stage is one of its settings, and the stage
+# decides which file of a module the loader reads.
+stealth::core::engine::configure
+
+if (( ${#stealth_module_dirs[@]} > 0 )); then
+    stealth::core::state::add_search_paths "${stealth_module_dirs[@]}"
+fi
+
+if (( ${#stealth_modules[@]} > 0 )); then
+    stealth::core::loader::module "${stealth_modules[@]}"
+fi
+
+if [[ -n "${stealth_module_list}" ]]; then
+    stealth::core::loader::load_manifest "${stealth_module_list}"
+fi
+
+stealth::core::engine::run "$@"
