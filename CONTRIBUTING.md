@@ -22,6 +22,7 @@ bats-expect, bats-mock and bats-matrix are submodules under `tests/helpers`. Aft
 
 ```sh
 make lint       # shellcheck over the sources, the helper and the tests
+make docs       # every function carries a full docblock
 make test       # the suites in the bats-test image; DISTRO, BASH_VERSION and BATS_VERSION pick the cell
 make test-host  # the suites with the bash and bats of this machine
 make coverage   # the suites under kcov: a table per file, report in coverage/; every line must be covered
@@ -30,7 +31,7 @@ make check      # what CI runs: lint, then test
 
 `RUNTIME=docker` selects Docker. The default is Podman. `TARGET` selects a suite or a file.
 
-CI runs `make lint`, `make test` for bash 4.4, 5.1, 5.2 and 5.3 against bats-core 1.7.0 and
+CI runs `make lint`, `make docs`, `make test` for bash 4.4, 5.1, 5.2 and 5.3 against bats-core 1.7.0 and
 1.14.0, `make test` on the Fedora image, and `make coverage` on the Fedora image at the
 100% floor.
 
@@ -43,10 +44,14 @@ One module per pull request, with its tests.
    leading underscore. `tests/fixtures/lib/probe.sh` shows the shape.
 2. State what it needs through the importer, and check for the tools a function needs
    before use. Take input as arguments and pass it to commands as arguments.
-3. Write the docblock every function has: summary, `Arguments`, `Returns`, and `Globals`
-   or `Outputs` when they apply. Internal functions too.
-4. Test it in `tests/<suite>/<layer>/<module>.bats`, where the suite is `unit`, `sys`,
-   `integration` or `e2e`. The file starts with the harness:
+3. Write the docblock every function has, internal functions too: a summary, then
+   `Usage:` with one line a caller can copy, `Arguments:` with every parameter or `None`,
+   and `Returns:` with every status and what ends the process. Add `Globals:` when the
+   body reads or writes a variable of the library, and `Outputs:` when it writes to a
+   descriptor of its own. `make docs` checks all of this and CI runs it.
+4. Test it in `tests/<layer>/<module>.bats`. The tests mirror `src/lib`, so
+   `src/lib/sys/io/fs.sh` is tested by `tests/sys/io/fs.bats`. The file starts with the
+   harness:
 
    ```bash
    bats_load_library stealth
@@ -55,12 +60,23 @@ One module per pull request, with its tests.
    ```
 
    `load_lib` sources a module by its path, `load_mock` a shared mock from `tests/mocks`,
-   and bats-expect, bats-mock and bats-matrix are loaded. One case per test, each named
-   `<function>: <case> -> <expectation>`. Mock the commands a module calls rather than run
-   them. The image has no network and no capabilities.
-5. `make coverage` must stay at 100%. A line that cannot run under the Linux coverage run
+   and bats-expect, bats-mock and bats-matrix are loaded. Mock the commands a module calls
+   rather than run them. The image has no network and no capabilities.
+5. Write one case per test, named `<subject>: <case> -> <expectation>`. The subject is the
+   full function name, so a reader knows what failed without opening the file:
+
+   ```bash
+   @test "stealth::sys::io::fs::atomic: the callback fails -> leaves the target alone" {
+   @test "stealth::sys::io::fs::_temp_beside: a path in /etc -> returns a sibling" {
+   ```
+
+   For a test of the file itself rather than one of its functions, such as the sourcing
+   guard, the subject is the module path: `@test "sys/io/fs: sourced twice -> ..."`.
+   Group the tests by subject under a banner comment, in the order the functions appear
+   in the module.
+6. `make coverage` must stay at 100%. A line that cannot run under the Linux coverage run
    carries `# LCOV_EXCL_LINE` with the reason.
-6. Add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+7. Add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
 
 ## Releasing
 
