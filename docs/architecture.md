@@ -80,7 +80,7 @@ flowchart TB
 | --- | --- | --- |
 | `util` | Nothing outside `util` | Pure bash. `list` uses `sort`, `ui` uses `tput`, `retry` uses `sleep`. No other external command. `math` counts and formats without either `awk` or `numfmt` |
 | `sys` | `util`, other `sys` modules | `sys/cmd` imports `util` only, so `sys/io` can import it without a cycle |
-| `core` | `util`, `sys/cmd`, `sys/check`, `sys/io/fs`, `sys/io/tmp` | The engine never imports `api` |
+| `core` | `util` only | The engine runs no command and opens no file through `sys`. It owns its own recorder, and whatever makes temporary files registers its own cleanup with `core/trap` |
 | `api` | `util`, `sys`, other `api` modules | A module of a product imports `api` and below |
 
 ### 3.1 Files and names
@@ -129,7 +129,12 @@ The engine's module search paths and the importer's search paths are the same li
 
 ## 5. The engine
 
-The engine is `core/{engine,loader,state,trap}` (`.scratch/src/lib/core/*.sh`, read in full). It is kept as it is, with the fixes in section 12.
+The engine is `core/{engine,loader,state,trap}`. Its shape is the one the previous library had: bootstrap, then the start hooks forward, the payload, and the end hooks back. Four things about it changed, each because the old one did not do what it said.
+
+- **Reading the configuration is a step of its own.** `engine::configure` runs before the first module is loaded, because the stage is one of the settings and the stage decides which file of a module the loader reads. The old engine read the configuration inside `run`, after `bin/stealth` had already loaded the modules, so a stage set in a file was ignored whenever a module was named on the command line.
+- **The end hooks are a finally.** They are registered on the trap stack before the first start hook, so a payload that fails, a start hook that fails and a signal all still run them. The old engine ran the payload through `sys::cmd::run`, which exits on a non-zero status, so the whole end pass was unreachable after anything went wrong and nothing a module took was given back.
+- **The recorder belongs to the engine.** It makes the file, rotates it per module, prints it and removes it. The old `trap::init` deferred `sys::io::tmp::cleanup`, and that cleanup deleted the recorder before the exit handler read it, so a failed run printed nothing.
+- **The engine draws the status line of each module.** `ui::begin` before a start hook and `ui::end` after it, with the status and the duration, so the output of a run is the engine's job rather than each module's.
 
 ### 5.1 A run
 
@@ -141,23 +146,24 @@ sequenceDiagram
     participant Mod as modules
     participant Trap as core::trap
 
-    Bin->>Bin: parse options, export STEALTH_*
+    Bin->>Bin: parse options, export the ones that were given
+    Bin->>Eng: configure: stealth.conf, conf.d/*.conf, mirror settings
     Bin->>Ldr: add search paths, load modules (-m, -M)
+    Ldr->>Ldr: detect stage, now that the configuration is read
     Ldr->>Mod: source common.sh and <stage>.sh
     Bin->>Eng: run [payload args...]
-    Eng->>Eng: load_config: stealth.conf, conf.d/*.conf
-    Eng->>Eng: bootstrap: save FDs, log file, log init, trap init, sync state, Grand Silence
-    Eng->>Mod: ::init on every library and module
-    Eng->>Eng: detect stage
+    Eng->>Eng: bootstrap: keep FDs, log file, log init, traps, recorder, take over output, UI
+    Eng->>Mod: ::init on every library and module, in load order
+    Eng->>Trap: defer the end pass
     loop forward over module order
+        Eng->>Eng: rotate recorder, ui::begin
         Eng->>Mod: mod::<path>::<stage>::start
+        Eng->>Eng: ui::end with the status and the duration
     end
-    Eng->>Eng: payload through sys::cmd::run (optional)
-    loop reverse over module order
-        Eng->>Mod: mod::<path>::<stage>::end
-    end
-    Eng-->>Trap: exit
-    Trap->>Trap: LIFO handlers, temp cleanup, flight recorder on failure
+    Eng->>Eng: payload, its status kept (optional)
+    Eng->>Mod: the end pass, reverse over module order
+    Eng-->>Trap: exit with the status
+    Trap->>Trap: handlers in reverse, then the recorder on failure
 ```
 
 ### 5.2 Stages
@@ -206,11 +212,14 @@ Modules are ordered by the list. The list is a file that defines `MODULES=()`, g
 
 ### 5.4 Configuration and state
 
-`core/state` is the registry every function reads from (`state.sh` lines 116 to 144).
+`core/state` is the registry every function reads from.
 
-- `state::get OUT KEY` reads the registry, then `STEALTH_<KEY>` upper-cased from the environment, then `KEY` itself.
-- `engine::load_config` reads `/etc/stealth/stealth.conf` and `/etc/stealth/conf.d/*.conf` as `KEY=VALUE` lines. Comments and blank lines are skipped, a leading `export` and surrounding quotes are stripped, and a key that was already in the environment when the engine was imported is not overwritten. The files are read, not sourced.
-- The binary exports `STEALTH_LOG_LEVEL`, `STEALTH_LOG_FILE`, `STEALTH_STAGE`, `STEALTH_DRY_RUN`, `STEALTH_CONF_FILE` and `STEALTH_CONF_DIR` from its options before the engine is imported.
+- `state::get OUT KEY [DEFAULT]` reads the registry, then `STEALTH_<KEY>` upper-cased from the environment, then `KEY` itself. With a default it always succeeds. Without one a key that is not set returns 1, which under `set -e` ends the process unless the caller handles it, so a caller that has a sensible default passes it.
+- `engine::configure` reads `/etc/stealth/stealth.conf` and then `/etc/stealth/conf.d/*.conf` in name order. A line is a key, an equals sign and a value, with an optional `export` in front and optional quotes around the value. `STEALTH_LOG_LEVEL` and `log_level` are the same setting. A line that is neither a comment nor a setting is reported and skipped. The files are read, not sourced.
+- A setting goes into the registry, not into the environment. The old engine exported every key it read, so every child process, build container included, inherited the whole configuration.
+- A setting that was **exported** before the run is the caller's choice and a file does not overrule it. An exported variable is what a command line or a shell sets; a library declaring its own default with `declare -g` does not export it, so `util/log` setting `STEALTH_LOG_LEVEL` to 3 as it loads is not a choice anyone made.
+- `util` may not depend on `core`, so the logger and the UI read plain variables. The engine copies `log_level`, `log_format`, `log_color`, `log_file`, `ui_width` and `ui_theme` out of the registry into them once the configuration is read.
+- The four stage names live in `core/state` in one list. `state::get_stages` and `state::is_stage` read it, and the engine asks rather than keeping a second copy.
 
 | Key | Read by | Meaning | Default |
 | --- | --- | --- | --- |
@@ -233,21 +242,24 @@ Modules are ordered by the list. The list is a file that defines `MODULES=()`, g
 
 ### 5.5 Input and output
 
-Bootstrap saves stdout and stderr, then redirects them (`engine.sh` lines 239 to 326).
+Bootstrap keeps stdout and stderr, then takes them over.
 
-- The logger writes to the saved stderr. The console stays readable.
+- The logger writes to the kept stderr. The console stays readable.
 - stdout goes to the log file when one is configured, else to `/dev/null`. This is the Grand Silence: a command that prints does not reach the terminal.
-- stderr goes to a flight recorder file. `core::trap` prints it once, at exit, only when the exit status is not zero.
-- `sys::cmd::stream` writes to the saved stderr for the commands whose output a person wants to watch.
+- stderr goes to a recorder file. `engine::_report` prints it once, after every handler has run, and only when the status is not zero.
+- The recorder is opened again before each module's start hook. What it holds when a run fails is the output of the step that failed, not of everything before it, and the file does not grow for the length of a build. It is opened again rather than emptied: emptying it would leave stderr writing at the offset it had reached, and the file would then begin with a hole as long as what was thrown away.
+- `sys::cmd::stream` writes to the kept stderr for the commands whose output a person wants to watch.
 
 ### 5.6 Signals and cleanup
 
-`core/trap` installs `ERR`, `EXIT`, `INT` and `TERM` handlers at bootstrap (`trap.sh` lines 240 to 254).
+`core/trap` takes over `ERR`, `EXIT`, `INT` and `TERM` at bootstrap.
 
-- `ERR` logs the failing command, its source and line, prints a stack trace, and exits with the command's status.
-- `EXIT` disables the traps, restores the FDs, runs the deferred handlers in LIFO order, dumps the flight recorder on failure, and removes it on success.
-- `INT` and `TERM` exit with 130.
-- `stealth::core::trap::defer NAME [ARGS...]` pushes a handler. `sys::io::tmp::cleanup` is pushed at init, so every registered temp file is removed at exit.
+- `ERR` logs the failing command, its file and line, writes the call stack, and ends the run with the command's status.
+- `EXIT` gives the traps back, runs the handlers in the reverse of the order they were registered, reports the status when nothing has explained it, and then runs the one thing set as last.
+- `INT` ends the run with 130 and `TERM` with 143, by the convention of 128 plus the number of the signal.
+- `trap::defer NAME [ARG...]` registers a handler as a function name and its arguments. Nothing is evaluated, so an argument with a space or a semicolon in it stays one argument. The old module ran `eval` on a string.
+- `trap::finally NAME [ARG...]` sets the one thing that runs after every handler, with the status of the run as its last argument. The engine puts the recorder there, because it has to outlive anything that might remove the file it is kept in.
+- `core/trap` knows nothing about temporary files. Whatever makes them registers its own cleanup.
 
 ## 6. The sys layer
 
@@ -515,6 +527,15 @@ The harness is `tests/helpers/stealth/load.bash`: `common_setup` and `common_tea
 | `shift 2` with one argument aborts under `set -e` | `util/fmt.sh` line 51, `api/virt/qemu.sh` lines 271 and 309, `api/lfs/env.sh` line 137, `api/os/bootc.sh` line 209 | Check `$#` first |
 | `conf::set` has no delimiter, `kv::set` drops a newline, `dns` writes a literal `\n`, kargs.d TOML is written as a string, `hash::string` hashes a trailing newline, `trim_all` globs, `zig` reads `$2` twice, `--secret` is encoded twice | `library-analysis.md` defects 4 to 7 and 11 to 14 | As listed there |
 | `trap::defer` evaluates a string | `trap.sh` line 152 | A function name with arguments |
+| The flight recorder is deleted before it is printed, so a failed run shows nothing | `trap.sh` line 250 defers `tmp::cleanup`, which removes the recorder that `trap.sh` line 158 then reads | `core/engine` owns the recorder, and `trap::finally` runs it after every handler |
+| The configuration is read after the modules are loaded, so a stage set in a file is ignored | `bin/stealth` line 205 against `engine.sh` line 464 | `engine::configure` is its own step and runs first |
+| The end hooks never run after a failure | `engine.sh` line 488 through `cmd.sh` line 246 | The end pass is registered on the trap stack before the first start hook |
+| A library's `init` runs in hash order | `engine.sh` line 149 iterates an associative array | `util::import::loaded`, which keeps the load order |
+| A module file is looked for in the library before the search paths | `loader.sh` lines 180 and 193 through `import.sh` | `core/loader` reads the file from the directory it resolved |
+| Every configuration key is exported, unvalidated, into every child process | `engine.sh` line 223 | Keys are validated and go into the registry |
+| `state::get` returns 1 for a missing key, which aborts under `set -e` | `state.sh` line 143 | An optional default, and the two-argument form is documented as ending the run |
+| A variable is the format of `printf` in the stack trace | `trap.sh` line 332 | A format of its own |
+| The recorder grows without bound for the length of a build | `engine.sh` line 323 | It is opened again before each module |
 
 ## 13. Decisions
 
