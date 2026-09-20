@@ -1,3 +1,20 @@
 # The library files are sourced and carry no shebang; every one is bash.
 shell=bash
 external-sources=true
+
+# Optional checks. Each of these catches a defect class the previous library
+# shipped, or holds a convention this one relies on:
+#
+#   check-extra-masked-returns  a status swallowed by a substitution or a pipe
+#   check-set-e-suppressed      a function whose failure the caller hides
+#   add-default-case            a case that silently ignores an unknown value
+#   avoid-nullary-conditions    [ $var ] instead of [[ -n $var ]]
+#   deprecate-which             which instead of command -v
+#   require-double-brackets     [ ] instead of [[ ]]
+#   require-variable-braces     $var in a concatenation, where the end is unclear
+#   useless-use-of-cat          a cat that a redirection does
+#
+# check-unassigned-uppercase is left off: bats sets BATS_* at run time, so it
+# reports every test file. quote-safe-variables and avoid-negated-conditions
+# are left off: they rewrite readable code.
+enable=check-extra-masked-returns,check-set-e-suppressed,add-default-case,avoid-nullary-conditions,deprecate-which,require-double-brackets,require-variable-braces,useless-use-of-cat
