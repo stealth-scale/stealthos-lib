@@ -30,7 +30,8 @@ PREFIX       ?= /opt/stealth
 SHELLCHECK   ?= shellcheck
 
 SOURCES = $(wildcard src/bin/*) $(shell find src/lib -name '*.sh' 2>/dev/null | sort)
-TESTS   = tests/helpers/stealth/load.bash $(TARGET) $(shell find tests/fixtures -name '*.sh' 2>/dev/null | sort)
+TESTS   = tests/helpers/stealth/load.bash $(wildcard tests/mocks/*.bash) $(TARGET) \
+          $(shell find tests/fixtures -name '*.sh' 2>/dev/null | sort)
 
 # As the calling user, no network, no capabilities, checkout read-only. coverage/ is
 # the one writable mount, for kcov's report. The image is its own init: Ctrl+C and
