@@ -1,0 +1,224 @@
+# -----------------------------------------------------------------------------
+# PACKAGE CONFIGURATION
+# -----------------------------------------------------------------------------
+name: "stealth"
+arch: "noarch"
+platform: "linux"
+version: "1.0.0"
+section: "utils"
+priority: "optional"
+maintainer: "Stealth Scale B.V. <team@stealthscale.io>"
+description: "Stealth Infrastructure Library"
+vendor: "Stealth Scale B.V."
+homepage: "https://stealthscale.io"
+license: "MIT"
+
+# -----------------------------------------------------------------------------
+# HARD DEPENDENCIES (The Kernel)
+# -----------------------------------------------------------------------------
+# Strictly minimal set to run the core engine and file I/O.
+# These are essential for the framework to boot and load modules.
+depends:
+  - bash
+  - coreutils  # cp, mv, rm, mkdir, mktemp, date, etc.
+  - findutils  # find, xargs
+  - grep
+  - sed
+  - gawk
+
+# -----------------------------------------------------------------------------
+# RECOMMENDED DEPENDENCIES (The Standard Library)
+# -----------------------------------------------------------------------------
+# What a sys module runs directly, with no fallback. A module that cannot find
+# one of these fails; the rest of the framework runs.
+recommends:
+  - jq             # sys/data/json
+  - yq             # sys/data/yaml
+  - curl           # sys/net/{conn,fetch}
+  - git            # sys/net/git
+  - tar            # sys/io/archive
+  - util-linux     # flock for sys/runtime/lock, lsblk for sys/io/block
+
+# -----------------------------------------------------------------------------
+# OPTIONAL DEPENDENCIES (Extensions)
+# -----------------------------------------------------------------------------
+suggests:
+  # System Utilities
+  - shadow-utils   # useradd, usermod, groupadd, chpasswd for sys/runtime/user
+  - procps-ng      # pgrep for sys/runtime/proc
+  - ncurses        # tput for util/ui
+  - systemd        # hostnamectl for sys/runtime/host, udevadm for sys/io/block
+
+  # The compressors sys/io/archive reads and writes
+  - gzip
+  - bzip2
+  - xz
+  - zstd
+
+  # Network & Hardware
+  - iproute2       # ip for sys/net/iface
+  - parted
+  - gdisk
+  - cryptsetup
+  - lvm2
+
+  # Virtualization (api/virt)
+  - podman
+  - docker
+  - qemu-img
+  - qemu-system-x86
+  - qemu-system-aarch64
+
+  # Security & Policy (api/sec)
+  - audit
+  - policycoreutils
+  - mokutil
+  - sbsigntools
+  - keyutils
+
+  # Package Management (api/pkg)
+  - dnf
+  - dnf5
+  - microdnf
+  - rpm-ostree
+  - flatpak
+  - rpm
+
+  # Build Systems (api/make)
+  - rpm-build
+  - golang
+  - rust
+  - cargo
+  - zig
+  - meson
+  - cmake
+  - gcc
+  - make
+
+# -----------------------------------------------------------------------------
+# OS SPECIFIC OVERRIDES
+# -----------------------------------------------------------------------------
+overrides:
+  # ---------------------------------------------------------------------------
+  # 1. RHEL / Fedora / CentOS
+  # ---------------------------------------------------------------------------
+  rpm:
+    depends:
+      - bash
+      - coreutils
+      - findutils
+      - grep
+      - sed
+      - gawk
+    recommends:
+      - jq
+      - yq
+      - curl
+      - git
+      - tar
+      - util-linux
+    suggests:
+      - shadow-utils
+      - procps-ng
+      - ncurses
+
+  # ---------------------------------------------------------------------------
+  # 2. Debian / Ubuntu
+  # ---------------------------------------------------------------------------
+  deb:
+    depends:
+      - bash
+      - coreutils
+      - findutils
+      - grep
+      - sed
+      - gawk
+    recommends:
+      - jq
+      - yq
+      - curl
+      - git
+      - tar
+      - util-linux
+    suggests:
+      - util-linux
+      - procps             # Debian package name for procps-ng tools
+      - libncurses-bin     # Debian often splits tput/infocmp
+
+  # ---------------------------------------------------------------------------
+  # 3. Alpine Linux
+  # ---------------------------------------------------------------------------
+  apk:
+    depends:
+      - bash
+      - coreutils
+      - findutils
+      - grep
+      - sed
+      - gawk
+    recommends:
+      - jq
+      - yq
+      - curl
+      - git
+      - tar
+      - util-linux
+    suggests:
+      - shadow
+      - procps
+      - ncurses
+
+  # ---------------------------------------------------------------------------
+  # 4. Arch Linux
+  # ---------------------------------------------------------------------------
+  archlinux:
+    depends:
+      - bash
+      - coreutils
+      - findutils
+      - grep
+      - sed
+      - gawk
+    recommends:
+      - jq
+      - yq
+      - curl
+      - git
+      - tar
+      - util-linux
+    suggests:
+      - shadow
+      - procps-ng
+      - ncurses
+
+# -----------------------------------------------------------------------------
+# PACKAGE FILES
+# -----------------------------------------------------------------------------
+contents:
+  - src: ./src/bin/stealth
+    dst: /usr/bin/stealth
+    file_info:
+      mode: 0755
+
+  - src: ./src/lib
+    dst: /usr/lib/stealth
+    file_info:
+      mode: 0644
+
+  - src: ./LICENSE
+    dst: /usr/share/doc/stealth/LICENSE
+    file_info:
+      mode: 0644
+
+  # The engine defaults to /etc/stealth/stealth.conf and /etc/stealth/conf.d
+  # and runs without either, so the package makes the directories and ships
+  # no settings of its own.
+  - dst: /etc/stealth/conf.d
+    type: dir
+    file_info:
+      mode: 0755
+
+  - dst: /etc/stealth/modules.d
+    type: dir
+    file_info:
+      mode: 0755
