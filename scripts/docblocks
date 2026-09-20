@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Checks the docblock of every function under src/lib.
+#
+#   scripts/docblocks [FILE...]     # the whole library when no file is given
+#
+# A function carries a block of comment lines directly above it, holding a
+# summary, and the sections every function has:
+#
+#   Usage:      one line a caller can copy
+#   Arguments:  every parameter, or None
+#   Returns:    every status, and what ends the process
+#
+# Globals: is required when the body reads or writes a variable of the library,
+# and Outputs: when the function writes to a descriptor of its own. A constant,
+# declared read-only in the same file, is not state and is not listed.
+set -Eeuo pipefail
+shopt -s globstar nullglob
+
+declare -ri OK=0
+declare -ri FAILED=1
+
+declare -i findings=0
+
+#######################################
+# Reports one finding on standard output and counts it.
+#
+# Usage:
+#   report src/lib/util/log.sh 42 stealth::util::log::init 'no Usage:'
+#
+# Arguments:
+#   $1 (String)  - The file
+#   $2 (Integer) - The line of the function
+#   $3 (String)  - The function name
+#   $4 (String)  - What is missing
+# Globals:
+#   findings (Write)
+# Outputs:
+#   The finding, to standard output
+# Returns:
+#   0 - Reported
+#######################################
+report() {
+    printf '%s:%s: %s: %s\n' "${1}" "${2}" "${3}" "${4}"
+    findings=$(( findings + 1 ))
+}
+
+#######################################
+# Collects every library variable a block of text names, as the keys of a map.
+#
+# Usage:
+#   collect_names seen "${body}"
+#
+# Arguments:
+#   $1 (Nameref) - The output map, name -> 1
+#   $2 (String)  - The text to read
+# Returns:
+#   0 - Collected
+#######################################
+collect_names() {
+    local -n _names_out="${1}"
+    local _names_rest="${2}"
+
+    local _names_one
+    while [[ "${_names_rest}" =~ (_?STEALTH_[A-Z0-9_]+) ]]; do
+        _names_one="${BASH_REMATCH[1]}"
+        _names_rest="${_names_rest/"${_names_one}"/}"
+
+        # A name that ends in an underscore is a prefix a caller completes,
+        # such as _STEALTH_LIB_${path}, not a variable of its own.
+        [[ "${_names_one}" == *_ ]] && continue
+        _names_out["${_names_one}"]=1
+    done
+    return 0
+}
+
+#######################################
+# Checks every function of one file.
+#
+# Usage:
+#   check_file src/lib/util/log.sh
+#
+# Arguments:
+#   $1 (String) - The file
+# Globals:
+#   findings (Write)
+# Outputs:
+#   A line per finding, to standard output
+# Returns:
+#   0 - Checked
+#######################################
+check_file() {
+    local -r file="${1}"
+    local -a lines=()
+    mapfile -t lines < "${file}"
+
+    # A read-only declaration is a constant, which carries no state, so a
+    # docblock does not list it.
+    local -A constants=()
+    local -i i j end depth
+    for (( i = 0; i < ${#lines[@]}; i++ )); do
+        if [[ "${lines[i]}" =~ ^declare\ -g?r[a-z]*\ +(_?STEALTH_[A-Z0-9_]+) ]]; then
+            constants["${BASH_REMATCH[1]}"]=1
+        fi
+    done
+
+    local name block body section global
+    local -A used=()
+
+    for (( i = 0; i < ${#lines[@]}; i++ )); do
+        [[ "${lines[i]}" =~ ^(stealth::[a-z0-9_:]+)\(\)\ \{ ]] || continue
+        name="${BASH_REMATCH[1]}"
+
+        # The comment block directly above, up to the first line that is not one.
+        block=""
+        for (( j = i - 1; j >= 0; j-- )); do
+            [[ "${lines[j]}" == '#'* ]] || break
+            block="${lines[j]}"$'\n'"${block}"
+        done
+
+        if [[ -z "${block}" ]]; then
+            report "${file}" "$(( i + 1 ))" "${name}" 'no docblock'
+            continue
+        fi
+
+        for section in 'Usage:' 'Arguments:' 'Returns:'; do
+            if [[ "${block}" != *"${section}"* ]]; then
+                report "${file}" "$(( i + 1 ))" "${name}" "no ${section}"
+            fi
+        done
+
+        if [[ ! "${block}" =~ \#\ [A-Z][a-z] ]]; then
+            report "${file}" "$(( i + 1 ))" "${name}" 'no summary'
+        fi
+
+        # The body, to the closing brace of the function.
+        body=""
+        depth=1
+        for (( end = i + 1; end < ${#lines[@]} && depth > 0; end++ )); do
+            body+="${lines[end]}"$'\n'
+            local braces="${lines[end]//[^\{]/}"
+            depth=$(( depth + ${#braces} ))
+            braces="${lines[end]//[^\}]/}"
+            depth=$(( depth - ${#braces} ))
+        done
+
+        # Every library variable the body names has to be in Globals.
+        used=()
+        collect_names used "${body}"
+        for global in "${!used[@]}"; do
+            [[ -n "${constants[${global}]:-}" ]] && continue
+            if [[ "${block}" != *"#   ${global} "* ]]; then
+                report "${file}" "$(( i + 1 ))" "${name}" "${global} is not in Globals:"
+            fi
+        done
+    done
+    return 0
+}
+
+declare -a FILES=("$@")
+if (( ${#FILES[@]} == 0 )); then
+    FILES=(src/lib/**/*.sh)
+fi
+
+for file in "${FILES[@]}"; do
+    check_file "${file}"
+done
+
+if (( findings > 0 )); then
+    printf '\n%d docblock findings. Every function carries a summary, Usage:, Arguments: and Returns:.\n' \
+        "${findings}" >&2
+    exit "${FAILED}"
+fi
+
+printf 'docblocks: %d files, no findings\n' "${#FILES[@]}"
+exit "${OK}"

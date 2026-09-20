@@ -34,6 +34,7 @@ jobs:
             | tar -xJ --strip-components 1 -C "$HOME/.local/bin" "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: make lint
+      - run: make docs
 
   # The bash and bats matrix, in the bats-test image, as `make test` runs it locally.
   test:

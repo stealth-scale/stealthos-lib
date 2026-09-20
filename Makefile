@@ -41,7 +41,7 @@ RUN = $(RUNTIME) run --rm --network=none --cap-drop=ALL --security-opt=label=dis
       --env BATS_LIB_PATH=/code/tests/helpers \
       --volume "$(CURDIR):/code:ro" --workdir /code
 
-.PHONY: help test coverage test-host lint check shell install uninstall clean
+.PHONY: help test coverage test-host lint docs check shell install uninstall clean
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{ printf "  %-10s %s\n", $$1, $$2 }'
@@ -57,9 +57,12 @@ test-host: ## Run TARGET with the bats of this machine
 	BATS_LIB_PATH=$(CURDIR)/tests/helpers bats $(BATS_FLAGS) --recursive $(TARGET)
 
 lint: ## Run shellcheck over the sources, the helper and the tests
-	$(SHELLCHECK) -x $(SOURCES) $(TESTS)
+	$(SHELLCHECK) -x $(SOURCES) $(TESTS) scripts/docblocks
 
-check: lint test ## What CI runs
+docs: ## Check that every function carries a full docblock
+	./scripts/docblocks
+
+check: lint docs test ## What CI runs
 
 shell: ## A shell in the image
 	$(RUN) --interactive --tty $(IMAGE) shell
