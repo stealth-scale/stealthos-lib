@@ -97,10 +97,10 @@ flowchart TB
 | --- | --- | --- |
 | `util` | `import`, `log`, `assert`, `text`, `fmt`, `list`, `math`, `retry`, `semver`, `ui` | The importer, logging, assertions, string and list helpers, text layout, retries, versions, terminal output |
 | `core` | `engine`, `loader`, `state`, `trap` | The lifecycle, module loading, the state registry, signals and cleanup |
-| `sys` | `cmd`, `check`, `env`, `system`, `crypto` | Command execution, host checks, environment, system facts, hashing and encryption primitives |
+| `sys` | `cmd`, `check`, `env`, `system`, `crypto` | Command execution, host checks, environment, system facts, random values from the kernel |
 | `sys/data` | `ini`, `json`, `kv`, `toml`, `yaml` | Read and write configuration formats |
 | `sys/io` | `fs`, `tmp`, `conf`, `content`, `archive`, `block` | Atomic file edits, temp files, config routing by extension, templates, archives, block devices |
-| `sys/net` | `conn`, `fetch`, `git`, `github`, `gitlab`, `iface` | Connectivity checks, downloads with checksums, git, forge APIs, interfaces |
+| `sys/net` | `cache`, `conn`, `fetch`, `forge`, `git`, `iface` | A store of downloads kept under their digests, reachability, downloads with checksums, forge APIs, git, interfaces |
 | `sys/runtime` | `arch`, `hash`, `host`, `lock`, `proc`, `user` | Target triples, digests, host facts, `flock`, processes, users |
 | `api/disk` | `part`, `fmt`, `luks` | Partitions, filesystems, LUKS2 with TPM2 and FIDO2 enrolment |
 | `api/os` | `user`, `service`, `locale`, `time`, `kernel`, `kmod`, `boot`, `bootc` | Users, systemd units, locale, chrony, kernel builds, modules, boot media, bootc images and nodes |
@@ -113,7 +113,7 @@ flowchart TB
 | `api/lfs` | `env`, `host`, `sources`, `pkg`, `toolchain` | The bootstrap driver for the seed and the cross toolchain |
 | `api/ci` | `ci` | CI detection, OIDC identity, registry cache, job summary |
 
-`util/fmt`, `api/oci`, `api/sec/{sign,receipt,consensus}`, `api/ci` and `api/make/plan` are new. `util/fmt` holds the padding, cutting and wrapping that the old `util/ui` did inline, so the UI composes them and a test reads a laid-out line without a terminal. `api/virt/container` and `api/make/{core,pkg,oci}` are rewritten. `core/state`, `api/oci/store`, `api/make/pkg`, `api/sec/receipt` and `util/ui` gain the functions of section 14. The rest is ported with the defects listed in `library-analysis.md` fixed.
+`util/fmt`, `api/oci`, `api/sec/{sign,receipt,consensus}`, `api/ci` and `api/make/plan` are new. `util/fmt` holds the padding, cutting and wrapping that the old `util/ui` did inline, so the UI composes them and a test reads a laid-out line without a terminal. `api/virt/container` and `api/make/{core,pkg,oci}` are rewritten. `core/state`, `api/oci/store`, `api/make/pkg`, `api/sec/receipt` and `util/ui` gain the functions of section 14. The rest is judged one module at a time. A module whose design still fits is ported with the defects listed in `library-analysis.md` fixed. A module whose design does not fit is rewritten, and the commit that brings it says which it was and why. `util/list`, `util/math`, `util/retry`, `util/semver` and `util/ui` were rewritten on those grounds; `util/import`, `util/log` and `util/assert` were ported.
 
 ## 4. The importer
 
@@ -300,7 +300,14 @@ Every executor honours `dry_run`: it logs the command and returns 0. The temp bu
 
 ### 6.5 Network and runtime
 
-`sys/net` fetches with a checksum, clones git, talks to GitHub and GitLab, and reads interfaces. `sys/runtime` gives the target triple table, host facts, `flock`, processes and users. `sys/net` is present in the `stealth` package and absent from the `stealth-build` package, as section 10 describes.
+`sys/net` fetches with a checksum, keeps what it fetched, talks to a code forge, clones git, and reads interfaces. `sys/runtime` gives the target triple table, host facts, `flock`, processes and users. `sys/net` is present in the `stealth` package and absent from the `stealth-build` package, as section 10 describes.
+
+Four decisions hold the group together.
+
+- **The store is keyed by the digest of a file, not by the address it came from.** A hit is verified by having been found, so a cache can never serve something stale. Mirrors fall out of it: several addresses serving one digest are interchangeable, and one serving the wrong bytes is skipped like one that is down.
+- **One module talks to both forges.** GitHub and GitLab answer the same four questions in different shapes, so a table holds what differs. An asset is found by walking the list and matching names with the shell's own patterns, because a pattern handed to `jq` inside a `test()` is part of a program and matches a regular expression where every caller writes a glob.
+- **Git pins by commit.** `git clone --branch` refuses a commit identifier outright, so `clone` starts an empty repository, fetches the one commit and checks it out. `--expect` lets a caller cloning a branch say which commit it believes that branch is at.
+- **Nothing is left behind in a checkout.** Who the run commits as travels in the environment, the directories it may touch travel on the command line, and a token stays in a file that git is only told the name of.
 
 ## 7. The api layer
 
@@ -527,6 +534,16 @@ The harness is `tests/helpers/stealth/load.bash`: `common_setup` and `common_tea
 | `shift 2` with one argument aborts under `set -e` | `util/fmt.sh` line 51, `api/virt/qemu.sh` lines 271 and 309, `api/lfs/env.sh` line 137, `api/os/bootc.sh` line 209 | Check `$#` first |
 | `conf::set` has no delimiter, `kv::set` drops a newline, `dns` writes a literal `\n`, kargs.d TOML is written as a string, `hash::string` hashes a trailing newline, `trim_all` globs, `zig` reads `$2` twice, `--secret` is encoded twice | `library-analysis.md` defects 4 to 7 and 11 to 14 | As listed there |
 | `trap::defer` evaluates a string | `trap.sh` line 152 | A function name with arguments |
+| A cache hit is served without checking it, so one poisoned entry is trusted for ever | `sys/net/fetch.sh` line 169 returns before the checksum at line 185 | The store is keyed by digest, and `cache::get` reads what it hands over |
+| A release asset pattern is pasted into a `jq` program, and `test()` reads it as a regular expression | `sys/net/github.sh` line 76, `sys/net/gitlab.sh` line 82 | The list is walked and names are matched with the shell's own patterns |
+| `git clone -b` cannot take a commit, so nothing can be pinned | `sys/net/git.sh` line 76 | `init`, `fetch --depth 1 origin <commit>`, `checkout FETCH_HEAD` |
+| `git::resolve_latest` orders tags with `sort -V`, which puts a release candidate after its release | `sys/net/git.sh` line 213 | `util/semver::sort` |
+| `conn::wait_online` pings a third party, so a network that drops ICMP reads as offline | `sys/net/conn.sh` line 47 | A connection to the host the caller is about to use |
+| `conn::check_port` pastes the host into a `bash -c` string | `sys/net/conn.sh` line 119 | `/dev/tcp` with the host as an argument |
+| `iface::get_ip` gives back an address with its network attached, and `get_ipv6` gives the link-local one | `sys/net/iface.sh` lines 52 and 76 | `ip -json` read with `sys/data/json`, global scope preferred, `address` and `cidr` separately |
+| Only the connection is bounded, so a server that answers and then stops sending hangs the build | `sys/net/fetch.sh` line 26 | `--max-time` and a speed floor, with a retry budget that does not double |
+| `git::clone` calls a private function of `sys/net/fetch` | `sys/net/git.sh` line 55 | The store is its own module |
+| A path with a number in it cannot reach into an array | `sys/data/json.sh`, every reader and writer | The path is typed against the document, so an array is indexed and an object with the key "0" still resolves by name |
 | The flight recorder is deleted before it is printed, so a failed run shows nothing | `trap.sh` line 250 defers `tmp::cleanup`, which removes the recorder that `trap.sh` line 158 then reads | `core/engine` owns the recorder, and `trap::finally` runs it after every handler |
 | The configuration is read after the modules are loaded, so a stage set in a file is ignored | `bin/stealth` line 205 against `engine.sh` line 464 | `engine::configure` is its own step and runs first |
 | The end hooks never run after a failure | `engine.sh` line 488 through `cmd.sh` line 246 | The end pass is registered on the trap stack before the first start hook |
