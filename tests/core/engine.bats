@@ -65,6 +65,23 @@ mod::${name}::build::end() { printf 'end ${name}\n' >> "\${STEALTH_MARKS}"; }
 EOF
 }
 
+# Writes a module whose start hook fails on its first line and then tries to
+# go on, for the test that it does not.
+#
+#   given_failing_module NAME
+given_failing_module() {
+    local -r name="${1}"
+    local -r dir="${STEALTH_MODULES}/${name}"
+
+    mkdir -p "${dir}"
+    cat > "${dir}/build.sh" <<EOF
+mod::${name}::build::start() {
+    false
+    printf 'PAST THE FAILURE\n' >&2
+}
+EOF
+}
+
 # Runs a script in a shell of its own, as a run would have it. An expected
 # status may come first, as `run` takes one.
 in_run() {
@@ -219,6 +236,14 @@ marks() {
     assert_var_equal STEALTH_LOG_FORMAT json
 }
 
+@test "stealth::core::engine::configure: dry_run -> reaches sys, which cannot read the registry" {
+    printf 'dry_run = 1\n' > "${STEALTH_CONF_FILE}"
+
+    stealth::core::engine::configure
+
+    assert_var_equal STEALTH_DRY_RUN 1
+}
+
 # ------------------------------------------------------------------------------
 # stealth::core::engine::run
 # ------------------------------------------------------------------------------
@@ -362,6 +387,20 @@ marks() {
     in_run 'stealth::core::loader::module alpha; stealth::core::engine::run'
 
     assert_stderr --partial '[ ok ] alpha'
+}
+
+@test "stealth::core::engine::run: a hook that fails -> stops where it failed" {
+    # Written as `hook || status=$?` the rest of the hook runs anyway: bash
+    # turns errexit off for a command in a condition and leaves it off for
+    # everything that command calls.
+    printf 'stage = build\n' > "${STEALTH_CONF_FILE}"
+    given_failing_module halfway
+
+    in_run -1 'stealth::core::loader::module halfway
+        stealth::core::engine::run'
+
+    assert_failure
+    refute_stderr --partial 'PAST THE FAILURE'
 }
 
 @test "stealth::core::engine::run: a module that failed -> is drawn as a failed line" {
@@ -555,6 +594,41 @@ EOF
 
     run marks
     assert_output --partial 'stealth::core::trap::_on_exit'
+}
+
+# ------------------------------------------------------------------------------
+# stealth::core::engine::_defer_cleanups
+# ------------------------------------------------------------------------------
+
+@test "stealth::core::engine::_defer_cleanups: a library with a cleanup -> registers it" {
+    # A layer may not import the one above it, so sys cannot ask core/trap to
+    # run its cleanup. core finds it by name instead.
+    # shellcheck disable=SC2329  # found by name, not called here
+    stealth::util::text::cleanup() { :; }
+
+    stealth::core::engine::_defer_cleanups
+
+    assert_array_contains _STEALTH_CORE_TRAP_STACK 'stealth::util::text::cleanup'
+}
+
+@test "stealth::core::engine::_defer_cleanups: no library has one -> registers nothing" {
+    stealth::core::engine::_defer_cleanups
+
+    assert_array_empty _STEALTH_CORE_TRAP_STACK
+}
+
+@test "stealth::core::engine::_defer_cleanups: a run that ends -> the cleanup has run" {
+    printf 'stage = build\n' > "${STEALTH_CONF_FILE}"
+
+    in_run '
+        stealth::util::import sys/cmd
+        stealth::sys::cmd::cleanup() { printf "cleanup ran\n" >> "${STEALTH_MARKS}"; }
+        stealth::core::engine::run
+    '
+
+    assert_success
+    run marks
+    assert_output 'cleanup ran'
 }
 
 # ------------------------------------------------------------------------------

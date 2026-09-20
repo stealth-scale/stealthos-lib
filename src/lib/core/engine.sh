@@ -41,7 +41,7 @@ declare -gr _STEALTH_CORE_ENGINE_LINE_RE='^(export[[:space:]]+)?([A-Za-z_][A-Za-
 # not depend on core. The engine copies these out of the registry once the
 # configuration is read. The variable of a setting is its key with the prefix
 # in front, upper-cased, so log_level is STEALTH_LOG_LEVEL.
-declare -gra _STEALTH_CORE_ENGINE_MIRROR=(log_level log_format log_color log_file ui_width ui_theme)
+declare -gra _STEALTH_CORE_ENGINE_MIRROR=(log_level log_format log_color log_file ui_width ui_theme dry_run)
 
 # Where a log file goes when the log_file setting says auto.
 declare -gr _STEALTH_CORE_ENGINE_LOG_ROOT='/var/log/stealth/stealth.log'
@@ -63,6 +63,11 @@ declare -g STEALTH_CONF_DIR="${STEALTH_CONF_DIR:-/etc/stealth/conf.d}"
 declare -gi _STEALTH_CORE_ENGINE_CONFIGURED=0
 declare -gi _STEALTH_CORE_ENGINE_READY=0
 declare -gi _STEALTH_CORE_ENGINE_ENDED=0
+
+# The module or payload the run is in the middle of, for the trap stack to
+# name when one of them fails, and when it started. Empty between them.
+declare -g _STEALTH_CORE_ENGINE_RUNNING=''
+declare -gi _STEALTH_CORE_ENGINE_STARTED=0
 
 # The descriptors this run started with, kept so the end of the run can put
 # them back.
@@ -512,6 +517,8 @@ stealth::core::engine::_init_all() {
 # Arguments:
 #   $1 (String) - The stage
 # Globals:
+#   _STEALTH_CORE_ENGINE_RUNNING (Write)
+#   _STEALTH_CORE_ENGINE_STARTED (Write)
 #   SECONDS (Read)
 # Outputs:
 #   A status line per module, to the console sink
@@ -530,26 +537,61 @@ stealth::core::engine::_start_all() {
     stealth::util::ui::header "Stage: ${1}"
 
     local _engine_start_mod
-    local -i _engine_start_at _engine_start_status
+    local -i _engine_start_at
     for _engine_start_mod in "${_engine_start_mods[@]}"; do
         stealth::core::engine::_rotate_recorder
         stealth::util::ui::begin "${_engine_start_mod}"
 
         _engine_start_at="${SECONDS}"
-        _engine_start_status=0
-        stealth::core::engine::_call_hook "${_engine_start_mod}" "${1}::start" ||
-            _engine_start_status=$?
+        _STEALTH_CORE_ENGINE_STARTED="${SECONDS}"
+        _STEALTH_CORE_ENGINE_RUNNING="${_engine_start_mod}"
 
-        stealth::util::ui::end "${_engine_start_mod}" "${_engine_start_status}" \
+        # Called plainly, so that a hook which fails partway stops there.
+        # Written as `hook || status=$?` it would not: bash turns errexit off
+        # for a command in a condition, and leaves it off for everything that
+        # command calls, so the rest of a failing hook runs anyway. The trap
+        # stack is what reports a failure, and _running is what tells it
+        # which module was in the middle of one.
+        stealth::core::engine::_call_hook "${_engine_start_mod}" "${1}::start"
+
+        _STEALTH_CORE_ENGINE_RUNNING=''
+        stealth::util::ui::end "${_engine_start_mod}" 0 \
             "$(( SECONDS - _engine_start_at ))"
-
-        if (( _engine_start_status != 0 )); then
-            stealth::core::trap::reported
-            stealth::util::log::warn '%s failed with status %d' \
-                "${_engine_start_mod}" "${_engine_start_status}"
-            return "${_engine_start_status}"
-        fi
     done
+    return 0
+}
+
+#######################################
+# Draws the line for whatever the run was in the middle of when it stopped.
+#
+# A hook and a payload are called plainly, so a failure in one does not come
+# back as a status anybody here can print. It arrives as the trap stack
+# unwinding, and by then the loop that would have drawn the line is gone.
+# This runs from that stack, which is the only place left that knows a module
+# was halfway through.
+#
+# Usage:
+#   stealth::core::trap::defer stealth::core::engine::_report_running
+#
+# Arguments:
+#   None
+# Globals:
+#   _STEALTH_CORE_ENGINE_RUNNING (Read)
+#   _STEALTH_CORE_ENGINE_STARTED (Read)
+# Returns:
+#   0 - Drawn, or there was nothing in the middle of running
+#######################################
+stealth::core::engine::_report_running() {
+    if [[ -z "${_STEALTH_CORE_ENGINE_RUNNING}" ]]; then
+        return 0
+    fi
+
+    stealth::util::ui::end "${_STEALTH_CORE_ENGINE_RUNNING}" 1 \
+        "$(( SECONDS - _STEALTH_CORE_ENGINE_STARTED ))"
+    stealth::util::log::warn '%s did not finish' \
+        "${_STEALTH_CORE_ENGINE_RUNNING}"
+
+    _STEALTH_CORE_ENGINE_RUNNING=''
     return 0
 }
 
@@ -588,6 +630,40 @@ stealth::core::engine::_end_all() {
                 "${_engine_end_mods[_engine_end_i]}" "${_engine_end_stage}::end"; then
             stealth::util::log::warn 'the end hook of %s failed' \
                 "${_engine_end_mods[_engine_end_i]}"
+        fi
+    done
+    return 0
+}
+
+#######################################
+# Registers the cleanup of every library that has one, to run when the run
+# ends. A library that has something to give back defines a cleanup function
+# in its own namespace, and the engine finds it.
+#
+# It works this way round because a layer may not import the one above it.
+# sys/io/tmp cannot ask core/trap to run its cleanup, so core asks sys instead,
+# by name and without importing anything.
+#
+# Usage:
+#   stealth::core::engine::_defer_cleanups
+#
+# Arguments:
+#   None
+# Returns:
+#   0 - Registered
+#######################################
+stealth::core::engine::_defer_cleanups() {
+    local -a _engine_clean_libs=()
+    local _engine_clean_one _engine_clean_ns
+
+    stealth::util::import::loaded _engine_clean_libs
+    for _engine_clean_one in "${_engine_clean_libs[@]}"; do
+        stealth::core::loader::to_namespace _engine_clean_ns \
+            "${_engine_clean_one}" 'stealth'
+        if declare -F "${_engine_clean_ns}::cleanup" >/dev/null 2>&1; then
+            stealth::util::log::trace 'the end of the run will call %s::cleanup' \
+                "${_engine_clean_ns}"
+            stealth::core::trap::defer "${_engine_clean_ns}::cleanup"
         fi
     done
     return 0
@@ -702,6 +778,7 @@ stealth::core::engine::bootstrap() {
 
     _STEALTH_CORE_ENGINE_READY=1
     stealth::core::engine::_init_all
+    stealth::core::engine::_defer_cleanups
 
     stealth::util::log::debug 'the engine is ready'
     return 0
@@ -712,9 +789,20 @@ stealth::core::engine::bootstrap() {
 # hooks forward, the payload if there is one, and the end hooks back.
 #
 # The end hooks are registered before the first start hook, so they run
-# whatever happens next. The payload runs directly and its status is kept, so
-# a payload that fails ends the run with its own status after the end hooks
-# have run, rather than in the middle of them.
+# whatever happens next.
+#
+# A hook and a payload are both called plainly, with nothing catching their
+# status. That is deliberate. Written as `hook || status=$?` the call would
+# read better and would stop a failing hook from failing: bash turns errexit
+# off for a command in a condition and leaves it off for everything that
+# command goes on to call, so the rest of a hook that failed on its first
+# line runs anyway. A subshell does not help, because the same suppression
+# reaches into one.
+#
+# So a failure here is reported by the trap stack rather than by a returned
+# status: it prints where the failure was and what the run had written, runs
+# the end hooks through the deferred _end_all, and ends the run with the
+# status of whatever failed.
 #
 # Usage:
 #   stealth::core::engine::run
@@ -723,10 +811,13 @@ stealth::core::engine::bootstrap() {
 # Arguments:
 #   $1 (String) - A function or a command to run between the passes. Optional
 #   $@ (String) - Its arguments
+# Globals:
+#   _STEALTH_CORE_ENGINE_RUNNING (Write)
+#   _STEALTH_CORE_ENGINE_STARTED (Write)
 # Returns:
-#   0 - The run finished
-#   The status of the payload, or of the start hook that failed
-#   Exits 1 when the payload is neither a function nor a command
+#   0 - Every hook and the payload ran
+#   Exits 1 when the payload is neither a function nor a command, and with
+#   the status of a hook or a payload that failed
 #######################################
 stealth::core::engine::run() {
     local -r _engine_run_payload="${1:-}"
@@ -741,11 +832,17 @@ stealth::core::engine::run() {
     stealth::core::state::detect_stage _engine_run_stage
 
     stealth::core::trap::defer stealth::core::engine::_end_all
+    stealth::core::trap::defer stealth::core::engine::_report_running
 
-    local -i _engine_run_status=0
-    stealth::core::engine::_start_all "${_engine_run_stage}" || _engine_run_status=$?
+    # Both of these are called plainly. A hook or a payload that fails has to
+    # stop where it failed, and it does not when the call is written as part
+    # of a condition: bash turns errexit off for such a command and for
+    # everything it calls. What reports a failure is the trap stack, which
+    # prints where it happened and what the run had written, and then runs
+    # the end hooks through the deferred _end_all above.
+    stealth::core::engine::_start_all "${_engine_run_stage}"
 
-    if (( _engine_run_status == 0 )) && [[ -n "${_engine_run_payload}" ]]; then
+    if [[ -n "${_engine_run_payload}" ]]; then
         if ! stealth::core::engine::_can_run "${_engine_run_payload}"; then
             stealth::util::log::error -c 127 'no function or command named %s' \
                 "${_engine_run_payload}"
@@ -753,15 +850,12 @@ stealth::core::engine::run() {
 
         stealth::core::engine::_rotate_recorder
         stealth::util::log::info 'running %s' "${_engine_run_payload}"
-        "${_engine_run_payload}" "$@" || _engine_run_status=$?
-
-        if (( _engine_run_status != 0 )); then
-            stealth::core::trap::reported
-            stealth::util::log::warn '%s failed with status %d' \
-                "${_engine_run_payload}" "${_engine_run_status}"
-        fi
+        _STEALTH_CORE_ENGINE_RUNNING="${_engine_run_payload}"
+        _STEALTH_CORE_ENGINE_STARTED="${SECONDS}"
+        "${_engine_run_payload}" "$@"
+        _STEALTH_CORE_ENGINE_RUNNING=''
     fi
 
     stealth::core::engine::_end_all
-    return "${_engine_run_status}"
+    return 0
 }
